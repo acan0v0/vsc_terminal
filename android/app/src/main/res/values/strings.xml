@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">VSC Terminal</string>
+    <string name="notif_channel_link">连接状态</string>
+    <string name="notif_link_title">与电脑保持连接</string>
+</resources>
