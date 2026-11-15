@@ -1,0 +1,7 @@
+relay/dist/
+bridge/node_modules/
+bridge/out/
+bridge/*.vsix
+*.exe
+*.log
+token

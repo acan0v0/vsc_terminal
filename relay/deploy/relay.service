@@ -1,0 +1,24 @@
+[Unit]
+Description=Claude remote relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=relay
+Group=relay
+ExecStart=/opt/relay/relay -addr 127.0.0.1:8443 -token-file /etc/relay/token
+Restart=always
+RestartSec=3
+# 512MB VPS：限制内存上限并压低 GC 目标，避免被 OOM killer 杀掉
+Environment=GOGC=50
+Environment=GOMEMLIMIT=120MiB
+MemoryMax=160M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/opt/relay /etc/relay
+
+[Install]
+WantedBy=multi-user.target

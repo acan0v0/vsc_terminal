@@ -1,0 +1,15 @@
+.vscode/**
+src/**
+build/**
+test/**
+tsconfig.json
+**/*.ts
+**/*.map
+node_modules/**/test/**
+node_modules/**/*.d.ts
+*.vsix
+.gitignore
+node_modules/cpu-features/**
+node_modules/buildcheck/**
+node_modules/nan/**
+.vscodeignore*

@@ -1,0 +1,81 @@
+{
+  "name": "vsc-terminal-bridge",
+  "displayName": "VSC Terminal Bridge",
+  "description": "Remote control Claude Code from a phone via a self-hosted relay",
+  "version": "0.1.0",
+  "publisher": "local",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "bridge.start",
+        "title": "Bridge: 连接中继"
+      },
+      {
+        "command": "bridge.stop",
+        "title": "Bridge: 断开中继"
+      },
+      {
+        "command": "bridge.forget",
+        "title": "Bridge: 清除已保存的连接信息"
+      }
+    ],
+    "configuration": {
+      "title": "VSC Terminal Bridge",
+      "properties": {
+        "bridge.sshPort": {
+          "type": "integer",
+          "default": 22,
+          "description": "SSH 端口"
+        },
+        "bridge.sshUser": {
+          "type": "string",
+          "default": "root",
+          "description": "SSH 用户名（非敏感，可放设置）"
+        },
+        "bridge.relayPort": {
+          "type": "integer",
+          "default": 8443,
+          "description": "relay 在 VPS 回环上的端口"
+        },
+        "bridge.claudePath": {
+          "type": "string",
+          "default": "",
+          "description": "留空则自动查找 VSCode 扩展内置的 claude 二进制"
+        },
+        "bridge.allowedRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "手机可选择的工作区根目录白名单；留空则使用当前 VSCode 工作区。请勿提交含个人路径的设置"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --allow-missing-repository"
+  },
+  "dependencies": {
+    "ssh2": "^1.16.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ssh2": "^1.15.0",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.5.0",
+    "@vscode/vsce": "^4.1.1",
+    "typescript": "^5.6.0"
+  }
+}
