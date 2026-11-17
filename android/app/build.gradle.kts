@@ -60,6 +60,8 @@ dependencies {
 
     // SSH：纯 Java，支持本地端口转发
     implementation("com.hierynomus:sshj:0.38.0")
+    // sshj 把 BouncyCastle 声明为 runtime 依赖；需要显式引入才能在自己的代码里替换 Android 自带的裁剪版
+    implementation("org.bouncycastle:bcprov-jdk18on:1.75")
     implementation("org.slf4j:slf4j-nop:2.0.16")
 
     // WebSocket
