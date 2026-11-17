@@ -49,10 +49,18 @@ class CredentialStore(context: Context) {
             .apply()
     }
 
+    /** 用户是否希望保持连接：主动连接后为 true，主动断开后为 false，用于决定要不要自动重连。 */
+    fun isWanted(): Boolean = prefs.getBoolean(K_WANTED, true)
+
+    fun setWanted(wanted: Boolean) {
+        prefs.edit().putBoolean(K_WANTED, wanted).apply()
+    }
+
     fun clear() = prefs.edit().clear().apply()
 
     private companion object {
         const val FILE = "bridge_credentials"
+        const val K_WANTED = "wanted"
         const val K_HOST = "host"
         const val K_SSH_PORT = "ssh_port"
         const val K_SSH_USER = "ssh_user"

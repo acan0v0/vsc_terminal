@@ -2,15 +2,21 @@ package com.acan0v0.vscterminal
 
 import android.app.Application
 import android.util.Log
+import com.acan0v0.vscterminal.net.BridgeManager
 import net.schmizz.sshj.common.SecurityUtils
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.security.Security
 
 class VscTerminalApp : Application() {
 
+    /** 连接的生命周期跟随进程，而不是跟随 Activity。 */
+    lateinit var bridge: BridgeManager
+        private set
+
     override fun onCreate() {
         super.onCreate()
         installBouncyCastle()
+        bridge = BridgeManager(this)
     }
 
     /**

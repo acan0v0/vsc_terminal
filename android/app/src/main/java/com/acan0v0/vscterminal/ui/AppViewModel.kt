@@ -1,9 +1,9 @@
 package com.acan0v0.vscterminal.ui
 
 import android.app.Application
-import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.acan0v0.vscterminal.VscTerminalApp
 import com.acan0v0.vscterminal.crypto.CredentialStore
 import com.acan0v0.vscterminal.data.BridgeEvent
 import com.acan0v0.vscterminal.data.BridgeRequest
@@ -13,22 +13,17 @@ import com.acan0v0.vscterminal.data.Entry
 import com.acan0v0.vscterminal.data.FileContent
 import com.acan0v0.vscterminal.data.SessionState
 import com.acan0v0.vscterminal.data.toEntries
-import com.acan0v0.vscterminal.net.BridgeClient
-import com.acan0v0.vscterminal.net.LinkService
-import com.acan0v0.vscterminal.net.SshTunnel
-import kotlinx.coroutines.Dispatchers
+import com.acan0v0.vscterminal.net.BridgeManager
+import com.acan0v0.vscterminal.net.LinkPhase
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
 data class UiState(
-    val phase: Phase = Phase.DISCONNECTED,
+    val phase: LinkPhase = LinkPhase.DISCONNECTED,
     val error: String? = null,
     val roots: List<String> = emptyList(),
     val currentRoot: String? = null,
@@ -37,142 +32,70 @@ data class UiState(
     val session: SessionState? = null,
     /** 当前浏览的子目录（相对 root，"" 表示根） */
     val currentPath: String = "",
-) {
-    enum class Phase { DISCONNECTED, CONNECTING, CONNECTED }
-}
+)
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val store = CredentialStore(app)
-    private var tunnel: SshTunnel? = null
-    private var client: BridgeClient? = null
-    private var connectGen = 0
+    private val bridge: BridgeManager = (app as VscTerminalApp).bridge
 
-    private val _ui = MutableStateFlow(UiState())
+    private val _ui = MutableStateFlow(UiState(phase = bridge.phase.value))
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
-    val hasCredentials: Boolean get() = store.load() != null
-
-    /** 上次保存的连接信息，用于回填输入框（密码同样来自加密存储）。 */
-    fun savedEndpoint(): CredentialStore.Endpoint? = store.load()
-
-    fun connect(host: String, sshPort: Int, user: String, token: String, password: String) {
-        val ep = CredentialStore.Endpoint(host.trim(), sshPort, user.trim(), token.trim(), password)
-        when {
-            ep.host.isBlank() -> return fail("请填写 VPS 地址")
-            ep.sshUser.isBlank() -> return fail("请填写 SSH 用户名")
-            ep.token.isBlank() -> return fail("请填写 relay token")
-            ep.password.isBlank() -> return fail("请填写 SSH 密码")
-        }
-        store.save(ep)
-        connect(ep)
-    }
-
-    /** 凭据已保存时直接重连（App 启动时不自动调用，由用户点按触发）。 */
-    fun connectSaved() {
-        val ep = store.load() ?: return fail("还没有保存连接信息")
-        connect(ep)
-    }
-
-    private fun connect(ep: CredentialStore.Endpoint) {
-        // 每次连接递增代号，晚到的旧连接结果直接丢弃，避免状态互相覆盖
-        val gen = ++connectGen
-        // 先彻底清掉上一次的隧道，避免端口和 SSHClient 残留
-        teardown()
-        _ui.update { it.copy(phase = UiState.Phase.CONNECTING, error = null) }
-
+    init {
+        // 连接由 BridgeManager 持有，界面只是观察者：Activity 重建后能直接接上正在运行的连接
         viewModelScope.launch {
-            try {
-                val t = withContext(Dispatchers.IO) {
-                    SshTunnel(
-                        host = ep.host,
-                        sshPort = ep.sshPort,
-                        user = ep.sshUser,
-                        password = ep.password,
-                        remotePort = 8443,
-                    ).also { it.start() }
+            bridge.phase.collect { phase ->
+                _ui.update { s ->
+                    s.copy(
+                        phase = phase,
+                        error = when {
+                            phase == LinkPhase.CONNECTED -> null
+                            phase == LinkPhase.CONNECTING -> s.error
+                            else -> bridge.error.value ?: s.error
+                        },
+                    )
                 }
-                if (gen != connectGen) {
-                    t.stop()
-                    return@launch
-                }
-                tunnel = t
-                val c = BridgeClient(viewModelScope, "ws://127.0.0.1:${t.tunnelPort}/ws?room=default&role=app", ep.token)
-                client = c
-                viewModelScope.launch { c.events.collect { onEvent(it) } }
-                c.connect()
-
-                // SSH 通了不代表中继可用（token 错、插件未启动等），等握手结果
-                val ok = withTimeoutOrNull(HANDSHAKE_TIMEOUT_MS) { c.connected.first { it } }
-                if (gen != connectGen) return@launch
-                if (ok == null) {
-                    throw IllegalStateException(c.lastError.value ?: "SSH 已连上，但中继没有响应（token 错误或 VSCode 插件未启动？）")
-                }
-                _ui.update { it.copy(phase = UiState.Phase.CONNECTED, error = null) }
-                LinkService.start(getApplication())
-                loadRoots()
-
-                // 连上之后再断开，回到未连接状态并给出原因
-                viewModelScope.launch {
-                    c.connected.collect { connected ->
-                        if (!connected && client === c && _ui.value.phase == UiState.Phase.CONNECTED) {
-                            _ui.update { s ->
-                                s.copy(phase = UiState.Phase.DISCONNECTED, error = c.lastError.value ?: "与电脑的连接已断开")
-                            }
-                            LinkService.stop(getApplication())
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                if (gen != connectGen) return@launch
-                Log.w(TAG, "connect failed", e)
-                disconnect()
-                _ui.update { it.copy(error = describe(e)) }
+                if (phase == LinkPhase.CONNECTED) loadRoots()
             }
         }
+        viewModelScope.launch {
+            bridge.error.collect { e -> if (e != null) _ui.update { it.copy(error = e) } }
+        }
+        viewModelScope.launch {
+            bridge.events.collect { onEvent(it) }
+        }
     }
+
+    val hasCredentials: Boolean get() = bridge.hasCredentials
+
+    /** 上次保存的连接信息，用于回填输入框（密码同样来自加密存储）。 */
+    fun savedEndpoint(): CredentialStore.Endpoint? = bridge.savedEndpoint()
+
+    fun connect(host: String, sshPort: Int, user: String, token: String, password: String) {
+        bridge.connect(host, sshPort, user, token, password)
+    }
+
+    /** App 回到前台时调用，未主动断开过就自动重连。 */
+    fun onForeground() = bridge.onForeground()
 
     fun disconnect() {
-        connectGen++
-        teardown()
-        _ui.update { it.copy(phase = UiState.Phase.DISCONNECTED) }
-    }
-
-    private fun teardown() {
-        client?.disconnect()
-        client = null
-        tunnel?.stop()
-        tunnel = null
-        LinkService.stop(getApplication())
+        bridge.disconnect()
+        _ui.update { it.copy(roots = emptyList(), currentRoot = null, tree = emptyList(), openFile = null, currentPath = "") }
     }
 
     fun forget() {
-        disconnect()
-        store.clear()
+        bridge.forget()
         _ui.value = UiState()
     }
 
-    private fun fail(message: String) = _ui.update { it.copy(error = message) }
-
-    private fun describe(e: Throwable): String {
-        val msg = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
-        return when {
-            msg.contains("Auth fail", ignoreCase = true) -> "SSH 认证失败：用户名或密码不正确"
-            msg.contains("refused", ignoreCase = true) -> "SSH 端口拒绝连接，检查地址与端口是否正确"
-            else -> msg
-        }
-    }
-
-    override fun onCleared() {
-        disconnect()
-        super.onCleared()
-    }
+    fun clearError() = _ui.update { it.copy(error = null) }
 
     // ---- 事件 ----
 
     private fun onEvent(ev: BridgeEvent) {
         when (ev) {
             is BridgeEvent.Delta -> updateAssistant { it.copy(text = it.text + ev.text) }
+            // 工具链只保留最新一条，避免刷屏
             is BridgeEvent.Tool -> updateAssistant(appendTool = "${ev.name} ${ev.detail}".trim())
             is BridgeEvent.Result -> updateAssistant {
                 it.copy(text = it.text.ifEmpty { ev.text }, streaming = false, costUsd = ev.costUsd)
@@ -199,7 +122,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val idx = msgs.indexOfLast { it.role == ChatMessage.Role.ASSISTANT }
             if (idx >= 0) {
                 val m = transform(msgs[idx])
-                msgs[idx] = if (appendTool != null) m.copy(tools = m.tools + appendTool) else m
+                msgs[idx] = if (appendTool != null) m.copy(tools = listOf(appendTool)) else m
             }
             s.copy(session = sess.copy(messages = msgs))
         }
@@ -208,7 +131,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---- 工作区与文件 ----
 
     private fun loadRoots() {
-        val c = client ?: return
+        val c = bridge.currentClient ?: return
         val parseRoots: (JSONObject) -> List<String> = { data ->
             val arr = data.optJSONArray("roots")
             if (arr == null) emptyList() else (0 until arr.length()).map { arr.optString(it) }
@@ -251,7 +174,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun loadTree(root: String, path: String) {
-        val c = client ?: return
+        val c = bridge.currentClient ?: return
         val parseEntries: (JSONObject) -> List<Entry> = { data ->
             data.optJSONArray("entries")?.toEntries().orEmpty()
         }
@@ -265,7 +188,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openFile(path: String) {
         val root = _ui.value.currentRoot ?: return
-        val c = client ?: return
+        val c = bridge.currentClient ?: return
         val parseFile: (JSONObject) -> FileContent = { data ->
             FileContent(
                 path = data.optString("path"),
@@ -298,7 +221,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun startSession(prompt: String) {
         val root = _ui.value.currentRoot ?: return
-        val c = client ?: return
+        val c = bridge.currentClient ?: return
         val parseSession: (JSONObject) -> String = { d -> d.optString("session") }
         _ui.update {
             it.copy(
@@ -322,7 +245,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun sendPrompt(text: String) {
-        val c = client ?: return
+        val c = bridge.currentClient ?: return
         val sess = _ui.value.session ?: return
         val id = sess.id ?: return
         val parseUnit: (JSONObject) -> Unit = { }
@@ -344,18 +267,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun closeSession() {
         val id = _ui.value.session?.id
-        val c = client
+        val c = bridge.currentClient
         if (id != null && c != null) {
             val parseUnit: (JSONObject) -> Unit = { }
             viewModelScope.launch { runCatching { c.request(BridgeRequest.KillSession(id), parseUnit) } }
         }
         _ui.update { it.copy(session = null) }
-    }
-
-    fun clearError() = _ui.update { it.copy(error = null) }
-
-    private companion object {
-        const val TAG = "AppVM"
-        const val HANDSHAKE_TIMEOUT_MS = 20_000L
     }
 }

@@ -28,6 +28,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.acan0v0.vscterminal.crypto.CredentialStore
+import com.acan0v0.vscterminal.net.LinkPhase
 
 /**
  * 连接设置面板。主页面始终可用，连接由用户在这里手动发起。
@@ -36,7 +37,7 @@ import com.acan0v0.vscterminal.crypto.CredentialStore
  */
 @Composable
 fun ConnectionDialog(
-    phase: UiState.Phase,
+    phase: LinkPhase,
     error: String?,
     initial: CredentialStore.Endpoint?,
     onConnect: (host: String, port: Int, user: String, token: String, password: String) -> Unit,
@@ -50,8 +51,8 @@ fun ConnectionDialog(
     var token by remember { mutableStateOf(initial?.token.orEmpty()) }
     var password by remember { mutableStateOf(initial?.password.orEmpty()) }
 
-    val connecting = phase == UiState.Phase.CONNECTING
-    val connected = phase == UiState.Phase.CONNECTED
+    val connecting = phase == LinkPhase.CONNECTING
+    val connected = phase == LinkPhase.CONNECTED
     val canSubmit = host.isNotBlank() && user.isNotBlank() && token.isNotBlank() &&
         password.isNotBlank() && !connecting && !connected
 
