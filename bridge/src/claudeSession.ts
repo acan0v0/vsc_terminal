@@ -45,6 +45,9 @@ interface Turn {
   tools: string[];
 }
 
+/** 文本增量的合并窗口：流式输出按 token 到达，逐条发送会把 UI 和隧道压满。 */
+const DELTA_FLUSH_MS = 75;
+
 /**
  * 一个常驻的 claude 进程，通过 stream-json 双向通信。
  * 用 --input-format stream-json 保持进程存活，因此同一会话可以多轮对话。
@@ -57,6 +60,9 @@ export class ClaudeSession {
   private started = false;
   private busy = false;
   private readonly history: { role: 'user' | 'assistant'; text: string }[] = [];
+  /** 尚未发出的文本增量，定时合并后一次性 emit */
+  private pendingDelta = '';
+  private flushTimer?: NodeJS.Timeout;
 
   constructor(
     readonly root: string,
@@ -101,10 +107,13 @@ export class ClaudeSession {
     });
 
     proc.on('error', (err) => {
+      this.flushDelta();
       this.emit({ type: 'session.error', session: this.id, message: err.message });
     });
 
     proc.on('exit', (code) => {
+      // 先把缓冲里的文字发出去，否则最后一段会随 ended 一起丢掉
+      this.flushDelta();
       this.emit({ type: 'session.ended', session: this.id, code });
     });
 
@@ -136,7 +145,37 @@ export class ClaudeSession {
   }
 
   kill(): void {
+    this.flushDelta();
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
     this.proc?.kill();
+  }
+
+  /**
+   * 文本增量先攒进缓冲区，按固定窗口合并成一条 session.delta。
+   * 逐 token 发送会让手机上每秒几十次重组，而且隧道里全是碎包。
+   */
+  private queueDelta(text: string): void {
+    this.pendingDelta += text;
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = undefined;
+      this.flushDelta();
+    }, DELTA_FLUSH_MS);
+  }
+
+  /** 立即发出缓冲的文字；工具/结果事件之前必须调用，保证顺序不乱、内容不丢。 */
+  private flushDelta(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+    if (!this.pendingDelta) return;
+    const text = this.pendingDelta;
+    this.pendingDelta = '';
+    this.emit({ type: 'session.delta', session: this.id, text });
   }
 
   getHistory() {
@@ -171,7 +210,7 @@ export class ClaudeSession {
         const delta = ev.delta as { type?: string; text?: string } | undefined;
         if (delta?.type === 'text_delta' && delta.text) {
           this.turn.text += delta.text;
-          this.emit({ type: 'session.delta', session: this.id, text: delta.text });
+          this.queueDelta(delta.text);
         }
       }
       return;
@@ -184,11 +223,13 @@ export class ClaudeSession {
         if (b.type === 'text' && b.text && !this.turn.text) {
           // 没有 partial 流时，用完整消息兜底（例如某些模型配置不发送 delta）
           this.turn.text += b.text;
-          this.emit({ type: 'session.delta', session: this.id, text: b.text });
+          this.queueDelta(b.text);
         }
         if (b.type === 'tool_use' && b.name) {
           const detail = summarizeToolInput(b.name, b.input);
           this.turn.tools.push(b.name);
+          // 工具事件必须排在这之前的文字之后
+          this.flushDelta();
           this.emit({ type: 'session.tool', session: this.id, name: b.name, detail });
         }
       }
@@ -198,6 +239,8 @@ export class ClaudeSession {
     if (type === 'result') {
       const resultText = typeof obj.result === 'string' ? obj.result : this.turn.text;
       this.busy = false;
+      // 先补齐文本，再发 result（App 侧会用 result 兜底空文本）
+      this.flushDelta();
       this.history.push({ role: 'assistant', text: resultText });
       this.emit({
         type: 'session.result',
