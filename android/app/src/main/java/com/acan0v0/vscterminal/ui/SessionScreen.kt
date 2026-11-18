@@ -1,6 +1,7 @@
 package com.acan0v0.vscterminal.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,10 +31,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
@@ -47,11 +52,22 @@ fun SessionScreen(
     onSend: (String) -> Unit,
     onClose: () -> Unit,
 ) {
-    var input by remember { mutableStateOf("") }
+    // 用 rememberSaveable：切到文件页再回来时，没发出去的草稿不会丢
+    var input by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
+    // 最后一条还可见时才跟随滚动；用户翻到更早的消息后就别再把他拽回去
+    val followBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            info.totalItemsCount == 0 || (last != null && last.index == info.totalItemsCount - 1)
+        }
+    }
 
     LaunchedEffect(session.messages.size, session.messages.lastOrNull()?.text?.length) {
-        if (session.messages.isNotEmpty()) listState.animateScrollToItem(session.messages.lastIndex)
+        if (session.messages.isNotEmpty() && followBottom) {
+            listState.scrollToLatest(session.messages.lastIndex)
+        }
     }
 
     Column(Modifier.fillMaxSize().imePadding()) {
@@ -151,9 +167,28 @@ private fun MessageBubble(msg: ChatMessage) {
     }
 }
 
+/**
+ * 跟到最新内容：最后一条可能比屏幕还高，只补上超出视口底部的部分，
+ * 而不是像 scrollToItem 那样把这条消息的顶部对齐到屏幕顶端。
+ * 用瞬时滚动而不是动画——每个增量都重启动画正是之前卡顿的来源之一。
+ */
+private suspend fun LazyListState.scrollToLatest(lastIndex: Int) {
+    // 本帧读到的 layoutInfo 可能还是上一帧的：先按索引定位，等下一帧再补溢出部分
+    if (layoutInfo.visibleItemsInfo.lastOrNull()?.index != lastIndex) {
+        scrollToItem(lastIndex)
+    }
+    withFrameNanos { }
+    val info = layoutInfo
+    val last = info.visibleItemsInfo.lastOrNull()
+    if (last != null && last.index == lastIndex) {
+        val overflow = last.offset + last.size - info.viewportEndOffset
+        if (overflow > 0) scrollBy(overflow.toFloat())
+    }
+}
+
 @Composable
 fun NoSessionPlaceholder(onNewSession: (String) -> Unit, root: String?) {
-    var prompt by remember { mutableStateOf("") }
+    var prompt by rememberSaveable { mutableStateOf("") }
     Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("在这个工作区开一个新会话", style = MaterialTheme.typography.titleMedium)

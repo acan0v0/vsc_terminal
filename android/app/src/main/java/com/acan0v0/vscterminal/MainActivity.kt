@@ -10,10 +10,13 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -22,6 +25,8 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -33,6 +38,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
@@ -43,6 +49,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -100,6 +107,8 @@ private fun WorkspacePicker(roots: List<String>, current: String, onSelect: (Str
 private fun AppRoot(vm: AppViewModel = viewModel()) {
     val ui by vm.ui.collectAsState()
     var tab by rememberSaveable { mutableStateOf(0) }
+    // 保存两个页面的 UI 状态：切页时输入框草稿、列表滚动位置不会丢
+    val pageStates = rememberSaveableStateHolder()
     // 连接面板只在用户主动打开时出现，App 启动后直接停在主页面
     var showConnection by rememberSaveable { mutableStateOf(false) }
     val connected = ui.phase == LinkPhase.CONNECTED
@@ -164,7 +173,12 @@ private fun AppRoot(vm: AppViewModel = viewModel()) {
                 NavigationBarItem(
                     selected = tab == 1,
                     onClick = { tab = 1 },
-                    icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) },
+                    icon = {
+                        // 在文件页时也能看到 agent 还在回答
+                        BadgedBox(badge = { if (ui.session?.running == true) Badge() }) {
+                            Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null)
+                        }
+                    },
                     label = { Text("会话") },
                 )
             }
@@ -184,22 +198,30 @@ private fun AppRoot(vm: AppViewModel = viewModel()) {
                 )
             }
             when (tab) {
-                0 -> {
-                    val file = ui.openFile
-                    if (file != null) {
-                        FileViewer(file, onBack = vm::closeFile)
-                    } else {
-                        FileTree(
-                            nodes = ui.tree,
-                            currentPath = ui.currentPath,
-                            onDir = { vm.enterDir(it.path) },
-                            onFile = { vm.openFile(it.path) },
-                            onUp = vm::goUp,
-                        )
+                0 -> pageStates.SaveableStateProvider("files") {
+                    Column(Modifier.fillMaxSize()) {
+                        // 会话在后台继续跑：给一条可点击的提示，避免用户以为对话被切断了
+                        ui.session?.takeIf { it.running }?.let {
+                            SessionRunningBanner(onOpen = { tab = 1 })
+                        }
+                        Box(Modifier.weight(1f).fillMaxWidth()) {
+                            val file = ui.openFile
+                            if (file != null) {
+                                FileViewer(file, onBack = vm::closeFile)
+                            } else {
+                                FileTree(
+                                    nodes = ui.tree,
+                                    currentPath = ui.currentPath,
+                                    onDir = { vm.enterDir(it.path) },
+                                    onFile = { vm.openFile(it.path) },
+                                    onUp = vm::goUp,
+                                )
+                            }
+                        }
                     }
                 }
 
-                1 -> {
+                1 -> pageStates.SaveableStateProvider("session") {
                     val session = ui.session
                     if (session == null) {
                         NoSessionPlaceholder(onNewSession = vm::startSession, root = ui.currentRoot)
@@ -225,6 +247,33 @@ private fun AppRoot(vm: AppViewModel = viewModel()) {
             },
             onDismiss = { showConnection = false },
         )
+    }
+}
+
+/** 文件页顶部的会话进行中提示，点一下回到会话页。 */
+@Composable
+private fun SessionRunningBanner(onOpen: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.primaryContainer,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+            Text(
+                "agent 正在回答，切回会话查看",
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                "查看",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
     }
 }
 
