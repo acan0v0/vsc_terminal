@@ -44,7 +44,7 @@ sh install.sh
 cd bridge
 npm install && npm run compile
 npx vsce package --allow-missing-repository
-code --install-extension vsc-terminal-bridge-0.1.0.vsix
+code --install-extension vsc-terminal-bridge-0.2.0.vsix
 ```
 
 **3. 连接**

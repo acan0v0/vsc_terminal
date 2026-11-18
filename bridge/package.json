@@ -2,7 +2,7 @@
   "name": "vsc-terminal-bridge",
   "displayName": "VSC Terminal Bridge",
   "description": "Remote control Claude Code from a phone via a self-hosted relay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "local",
   "private": true,
   "engines": {
